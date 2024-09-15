@@ -230,30 +230,8 @@ class ExampleMoveItTrajectories(object):
         print("Move to cup failed.")
         #self.reset()
 
-
-  def grasp(self):
-      rospy.loginfo("Grasping...")
-      print("Focusing camera...")
-      rospy.sleep(1.0)
-      #self.focus_camera()
-      print("Done.")
-      rospy.sleep(2.0)
-
-      feed_grasp = [0.281678688, 0.2402271182, -1.8603813563, 0.0112050138, -1.0966950888, 1.5619475075]
-      grasp_scan = [0.000, 0.000, -1.571, 0.000, -1.571, 1.571]
       
-
-      # Move to grasp scan location
-      rospy.loginfo("Moving to grasp scan location...")
-      success = self.move('joint', grasp_scan, tolerance=0.01, vel=1.0, accel=1.0, attempts=20, time=20.0, constraints=None)
-      if success:
-        success = self.move('gripper', 0.60)
-      else:
-        print("Move to grasp scan failed.")
-        return
-
-      rospy.sleep(6.0)
-
+  def prepare_object_location(self):
       location = self.get_object_location()
       x = location.get('x', 0)
       y = location.get('y', 0)
@@ -264,12 +242,9 @@ class ExampleMoveItTrajectories(object):
       print("Object Location before: ", x, y, z, roll, pitch, yaw)
 
       # if(z < 0.170):
-      #     z = 0.170
-      
-      # Refine the object oreintation
-      roll = -roll #for some reason the roll sign has to be flipped
-      #yaw = (yaw + 180) % 360
+      #   z = 0.170
 
+      roll = -roll #for some reason the roll sign has to be flipped
 
       print("Object Location after: ", x, y, z, roll, pitch, yaw)
 
@@ -288,6 +263,42 @@ class ExampleMoveItTrajectories(object):
       P.orientation.y = q[1]
       P.orientation.z = q[2]
       P.orientation.w = q[3]
+
+      return P
+  
+  def prepare_grasp(self):
+    rospy.loginfo("Preparing to grasp...")
+    grasp_scan = [0.000, 0.000, -1.571, 0.000, -1.571, 1.571]
+    # Move to grasp scan location
+    rospy.loginfo("Moving to grasp scan location...")
+    success = self.move('joint', grasp_scan, tolerance=0.01, vel=1.0, accel=1.0, attempts=20, time=20.0, constraints=None)
+    if success:
+      success = self.move('gripper', 0.60)
+    else:
+      print("Move to grasp scan failed.")
+      return
+
+    
+
+
+
+  def grasp(self):
+      rospy.loginfo("Grasping...")
+      print("Focusing camera...")
+      rospy.sleep(1.0)
+      #self.focus_camera()
+      print("Done.")
+      rospy.sleep(2.0)
+
+      feed_grasp = [0.281678688, 0.2402271182, -1.8603813563, 0.0112050138, -1.0966950888, 1.5619475075]
+      # Move to Grasp Scan
+      self.prepare_grasp()
+
+      rospy.sleep(6.0)
+      
+
+      # Get object location
+      P = self.prepare_object_location()
 
       # Set Constraints
       box_pose = PoseStamped()
@@ -335,9 +346,19 @@ class ExampleMoveItTrajectories(object):
 
       success = self.move('pose', P, tolerance=0.01, vel=0.5, accel=0.5, attempts=10, time=100.0, constraints=None)
       if success:
-          print("Done.")
-            #Close the gripper
-          success = self.move('gripper', 0.9)
+        self.handle_grasp()
+      else:
+          print("Move to cup failed.")
+          #self.reset()
+
+  def handle_grasp(self):
+    print("Done.")
+    #Close the gripper
+    success = self.move('gripper', 0.9)
+    if success:
+        grasp_success = input("Did the robot grasp the object? (y/n): ")
+        if grasp_success == 'y':
+          print("Grasping successful.")
           feed_grasp_joints = [1.4378760925762786, -0.047248738795749645, -1.1988789563464968, 0.8093016986565907, -1.9336991632694867, 0.23040917408357622]
           success2 = self.move('joint',feed_grasp_joints, tolerance=0.01, vel=1.0, accel=1.0, attempts=20, time=10.0, constraints=None)
           rospy.sleep(2.0)
@@ -345,12 +366,43 @@ class ExampleMoveItTrajectories(object):
           home_joints = [0.3898367417254534, -1.3306542976124893, -1.8414975968537446, 0.10480068192728456, -1.7593289572126576, 1.5593387419951033]
           success3 = self.move('joint', home_joints, tolerance=0.01, vel=1.0, accel=1.0, attempts=20, time=10.0, constraints=None)
           success_g4 = self.move('gripper', 0)
+        elif grasp_success == 'n':
+          self.retry_grasp()
 
-          
-          
-      else:
-          print("Move to cup failed.")
-          #self.reset()
+  def retry_grasp(self):
+    # Construct Retry Pose
+    rospy.loginfo("Retrying grasp...")
+    P = self.get_cartesian_pose()
+
+    P.position.z = 0.3
+    euler_angles = euler_from_quaternion([P.orientation.x, P.orientation.y, P.orientation.z, P.orientation.w])
+    roll = degrees(euler_angles[0])
+    pitch = degrees(euler_angles[1])
+    yaw = 90
+
+    q = quaternion_from_euler(radians(roll), radians(pitch), radians(yaw))
+
+    P.orientation.x = q[0]
+    P.orientation.y = q[1]
+    P.orientation.z = q[2]
+    P.orientation.w = q[3]
+
+    #Move to Retry Pose
+    
+    success = self.move('pose', P, tolerance=0.01, vel=0.5, accel=0.5, attempts=10, time=10.0, constraints=None)
+    rospy.sleep(2.0)
+    if success:
+      success_gripper = self.move('gripper', 0.65)
+    
+    # Get object location
+    rospy.sleep(4.0)
+    P_new = self.prepare_object_location()
+    
+    if P_new is not None:
+      success = self.move('pose', P_new, tolerance=0.01, vel=0.5, accel=0.5, attempts=10, time=10.0, constraints=None)
+      self.handle_grasp()
+
+        
 
 
   def reach_named_position(self, target):
